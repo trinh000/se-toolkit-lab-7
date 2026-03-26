@@ -57,3 +57,5 @@ in the README.
 Every handler is tested in `--test` mode before being wired to Telegram. After each
 task, the sequence is: `uv run bot.py --test "/command"` locally → `git push` →
 `git pull` on VM → restart bot → verify in Telegram.
+
+See bot/README or `uv run bot.py --test` for verification steps.
