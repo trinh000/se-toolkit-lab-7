@@ -1,5 +1,6 @@
 """Intent router — routes plain-text messages through the LLM tool-calling loop."""
 
+import asyncio
 import json
 import sys
 
@@ -11,7 +12,7 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "get_items",
-            "description": "List all labs and tasks available in the LMS",
+            "description": "List all labs and tasks. Use ONLY when you need the list of lab IDs. If the user mentions a specific lab number (e.g. 'lab 3', 'lab-03'), skip this and call the relevant tool directly with lab='lab-03'.",
             "parameters": {"type": "object", "properties": {}, "required": []},
         },
     },
@@ -27,12 +28,10 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "get_scores",
-            "description": "Get score distribution (4 buckets: 0-25%, 25-50%, 50-75%, 75-100%) for a lab",
+            "description": "Get score distribution for a lab",
             "parameters": {
                 "type": "object",
-                "properties": {
-                    "lab": {"type": "string", "description": "Lab identifier, e.g. 'lab-04'"}
-                },
+                "properties": {"lab": {"type": "string", "description": "Lab ID e.g. 'lab-04'"}},
                 "required": ["lab"],
             },
         },
@@ -41,12 +40,10 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "get_pass_rates",
-            "description": "Get per-task average scores and attempt counts for a lab",
+            "description": "Get per-task average scores and attempt counts for a lab. For comparing pass rates across all labs, call this for each lab ID simultaneously.",
             "parameters": {
                 "type": "object",
-                "properties": {
-                    "lab": {"type": "string", "description": "Lab identifier, e.g. 'lab-04'"}
-                },
+                "properties": {"lab": {"type": "string", "description": "Lab ID e.g. 'lab-04'"}},
                 "required": ["lab"],
             },
         },
@@ -58,9 +55,7 @@ TOOLS = [
             "description": "Get number of submissions per day for a lab",
             "parameters": {
                 "type": "object",
-                "properties": {
-                    "lab": {"type": "string", "description": "Lab identifier, e.g. 'lab-04'"}
-                },
+                "properties": {"lab": {"type": "string", "description": "Lab ID e.g. 'lab-04'"}},
                 "required": ["lab"],
             },
         },
@@ -69,12 +64,10 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "get_groups",
-            "description": "Get per-group average scores and student counts for a lab",
+            "description": "Get per-group average scores and student counts for a lab. Call directly with the lab ID when a lab number is mentioned.",
             "parameters": {
                 "type": "object",
-                "properties": {
-                    "lab": {"type": "string", "description": "Lab identifier, e.g. 'lab-04'"}
-                },
+                "properties": {"lab": {"type": "string", "description": "Lab ID e.g. 'lab-03'"}},
                 "required": ["lab"],
             },
         },
@@ -87,8 +80,8 @@ TOOLS = [
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "lab": {"type": "string", "description": "Lab identifier, e.g. 'lab-04'"},
-                    "limit": {"type": "integer", "description": "Number of top learners to return (default 5)"},
+                    "lab": {"type": "string", "description": "Lab ID e.g. 'lab-04'"},
+                    "limit": {"type": "integer", "description": "Number of top learners (default 5)"},
                 },
                 "required": ["lab"],
             },
@@ -101,9 +94,7 @@ TOOLS = [
             "description": "Get the completion rate percentage for a lab",
             "parameters": {
                 "type": "object",
-                "properties": {
-                    "lab": {"type": "string", "description": "Lab identifier, e.g. 'lab-04'"}
-                },
+                "properties": {"lab": {"type": "string", "description": "Lab ID e.g. 'lab-04'"}},
                 "required": ["lab"],
             },
         },
@@ -119,13 +110,15 @@ TOOLS = [
 ]
 
 SYSTEM_PROMPT = (
-    "You are an LMS assistant bot. You have access to tools that fetch data from a "
-    "Learning Management System backend. When a user asks a question, use the appropriate "
-    "tools to get data, then provide a clear and concise answer. "
-    "For multi-step questions (e.g. 'which lab has the lowest pass rate'), call tools "
-    "for each lab and compare the results. Always use tools to answer data questions — "
-    "do not guess. If the question is a greeting or unrelated, respond helpfully and "
-    "mention what you can do."
+    "You are an LMS assistant bot. Use tools to fetch real data, then answer.\n\n"
+    "Rules:\n"
+    "1. If the user specifies a lab number (e.g. 'lab 3', 'lab-03', 'lab 4'), call the relevant "
+    "tool DIRECTLY with that lab ID — do NOT call get_items first.\n"
+    "2. For 'which lab has the lowest/highest pass rate': call get_items once to get lab IDs, "
+    "then call get_pass_rates for EVERY lab in ONE response (multiple tool calls at once).\n"
+    "3. Always include specific numbers (percentages) AND lab names in your final answer. "
+    "Format: 'Lab 03 has the lowest pass rate at 52.3%'. Never omit the percentage.\n"
+    "4. For greetings or unrelated input, respond helpfully and mention what you can do."
 )
 
 
@@ -162,28 +155,29 @@ async def route(text: str, lms: LMSClient, llm: LLMClient) -> str:
         {"role": "user", "content": text},
     ]
 
-    for _ in range(10):  # max iterations to prevent infinite loops
+    for _ in range(8):
         msg = await llm.chat(messages, tools=TOOLS)
         tool_calls = msg.get("tool_calls")
 
         if not tool_calls:
             return msg.get("content") or "I couldn't generate a response."
 
-        # Execute all tool calls
         messages.append(msg)
-        for tc in tool_calls:
+
+        # Execute all tool calls in parallel
+        async def exec_tc(tc: dict) -> tuple[str, str, str]:
             name = tc["function"]["name"]
             args = json.loads(tc["function"].get("arguments", "{}"))
             print(f"[tool] LLM called: {name}({args})", file=sys.stderr)
             result = await _call_tool(name, args, lms)
-            item_count = len(json.loads(result)) if result.startswith("[") else "-"
-            print(f"[tool] Result: {item_count} items", file=sys.stderr)
-            messages.append({
-                "role": "tool",
-                "tool_call_id": tc["id"],
-                "content": result,
-            })
+            count = len(json.loads(result)) if result.startswith("[") else "-"
+            print(f"[tool] Result: {count} items", file=sys.stderr)
+            return tc["id"], name, result
 
-        print(f"[summary] Feeding {len(tool_calls)} tool result(s) back to LLM", file=sys.stderr)
+        results = await asyncio.gather(*[exec_tc(tc) for tc in tool_calls])
+        print(f"[summary] Feeding {len(results)} tool result(s) back to LLM", file=sys.stderr)
+
+        for tool_id, _name, result in results:
+            messages.append({"role": "tool", "tool_call_id": tool_id, "content": result})
 
     return "Could not complete the request after multiple steps."
