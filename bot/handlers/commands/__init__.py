@@ -7,12 +7,12 @@ from services.lms_client import LMSClient
 
 def _fmt_error(e: Exception) -> str:
     if isinstance(e, httpx.ConnectError):
-        return f"Backend error: connection refused. Check that the services are running. ({e})"
+        return f"❌ Backend error: connection refused. Check that the services are running. ({e})"
     if isinstance(e, httpx.HTTPStatusError):
-        return f"Backend error: HTTP {e.response.status_code}. The backend service may be down."
+        return f"❌ Backend error: HTTP {e.response.status_code}. The backend service may be down."
     if isinstance(e, httpx.TimeoutException):
-        return f"Backend error: request timed out. ({e})"
-    return f"Backend error: {e}"
+        return f"❌ Backend error: request timed out. ({e})"
+    return f"❌ Backend error: {e}"
 
 
 async def handle_start() -> str:
