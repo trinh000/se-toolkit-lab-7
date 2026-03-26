@@ -91,3 +91,49 @@ By the end of this lab, you should be able to say:
 2. [Backend Integration](./lab/tasks/required/task-2.md) — P0: slash commands + real data
 3. [Intent-Based Natural Language Routing](./lab/tasks/required/task-3.md) — P1: LLM tool use
 4. [Containerize and Document](./lab/tasks/required/task-4.md) — P3: containerize + deploy
+
+## Deploy
+
+All services (backend, bot, postgres, caddy, pgadmin) run via Docker Compose.
+
+### Required environment variables
+
+Copy `.env.docker.example` to `.env.docker.secret` and fill in:
+
+| Variable | Description |
+|---|---|
+| `LMS_API_KEY` | Secret key for the LMS backend API |
+| `BOT_TOKEN` | Telegram bot token from @BotFather |
+| `LLM_API_KEY` | Qwen Code API key |
+| `LLM_API_MODEL` | LLM model name (e.g. `qwen3-coder-plus`) |
+| `AUTOCHECKER_API_LOGIN` | University email |
+| `AUTOCHECKER_API_PASSWORD` | GitHub username + Telegram alias |
+
+### Start all services
+
+```bash
+docker compose --env-file .env.docker.secret up --build -d
+```
+
+### Verify deployment
+
+```bash
+# Check all containers are running
+docker compose --env-file .env.docker.secret ps
+
+# Check backend health
+curl -sf http://localhost:42002/docs
+
+# Check bot logs
+docker compose --env-file .env.docker.secret logs bot --tail 20
+
+# Populate database (first time)
+curl -X POST http://localhost:42002/pipeline/sync \
+  -H "Authorization: Bearer YOUR_LMS_API_KEY" \
+  -H "Content-Type: application/json" -d '{}'
+```
+
+### Networking notes
+
+- The bot reaches the backend via `http://backend:8000` (Docker service name).
+- The Qwen proxy runs as a separate compose project; the bot reaches it via `http://host.docker.internal:42005/v1`.
