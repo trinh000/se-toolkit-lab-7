@@ -181,3 +181,8 @@ async def route(text: str, lms: LMSClient, llm: LLMClient) -> str:
             messages.append({"role": "tool", "tool_call_id": tool_id, "content": result})
 
     return "Could not complete the request after multiple steps."
+
+
+def get_tool_names() -> list[str]:
+    """Return list of available tool names (for documentation)."""
+    return [t["function"]["name"] for t in TOOLS]
